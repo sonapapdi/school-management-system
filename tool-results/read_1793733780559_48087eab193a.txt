@@ -1,0 +1,563 @@
+   400→          const sectionsFor = (g: string, sec: string) => st.data.sections.find((s) => s.gradeId === `g${g}` && s.name === sec)?.id;
+   401→          accepted.forEach((row, i) => {
+   402→            const id = uid('stu');
+   403→            const sectionId = sectionsFor(row.values['Grade'], row.values['Section']) ?? IDS.section7A;
+   404→            newStudents.push({
+   405→              id,
+   406→              admNo: row.values['Admission number'],
+   407→              grNo: String(4600 + i),
+   408→              firstName: row.values['First name'],
+   409→              lastName: row.values['Last name'],
+   410→              displayName: `${row.values['First name']} ${row.values['Last name']}`,
+   411→              dob: row.values['Date of birth'],
+   412→              gender: i % 2 === 0 ? 'Female' : 'Male',
+   413→              admissionDate: imp.uploadedAt.slice(0, 10),
+   414→              status: 'active',
+   415→            });
+   416→            newGuardians.push({
+   417→              id: uid('grd'), studentId: id, name: row.values['Guardian name'], relationship: 'Father',
+   418→              mobile: `+91 ${row.values['Guardian mobile']}`, communicationAllowed: true, appAccess: false, verified: false,
+   419→            });
+   420→            newEnrollments.push({ id: uid('enr'), studentId: id, ayId: imp.ayId, sectionId, rollNo: 30 + i, start: imp.uploadedAt.slice(0, 10), status: 'active' });
+   421→          });
+   422→          set((s2) => ({
+   423→            data: {
+   424→              ...s2.data,
+   425→              students: [...s2.data.students, ...newStudents],
+   426→              guardians: [...s2.data.guardians, ...newGuardians],
+   427→              enrollments: [...s2.data.enrollments, ...newEnrollments],
+   428→              imports: s2.data.imports.map((x) => (x.id === importId ? { ...x, status: 'committed' as const } : x)),
+   429→            },
+   430→          }));
+   431→          audit('Committed import', 'Import', importId);
+   432→          toast('Import committed', 'success', `${accepted.length} students added to the directory.`);
+   433→        },
+   434→        discardImport: (importId) => {
+   435→          set((st) => ({ data: { ...st.data, imports: st.data.imports.filter((i) => i.id !== importId) } }));
+   436→          audit('Discarded import', 'Import', importId);
+   437→          toast('Import batch discarded', 'info');
+   438→        },
+   439→
+   440→        /* ── staff ── */
+   441→        upsertStaff: (input) => {
+   442→          const id = input.id ?? uid('stf');
+   443→          set((st) => {
+   444→            const exists = st.data.staff.some((s) => s.id === id);
+   445→            const member: ErpData['staff'][number] = {
+   446→              id, code: input.code, name: input.name, role: input.role, mobile: input.mobile,
+   447→              email: input.email, startDate: input.startDate, status: input.status,
+   448→              lastSignIn: input.invite ? undefined : st.data.staff.find((s) => s.id === id)?.lastSignIn,
+   449→            };
+   450→            return {
+   451→              data: {
+   452→                ...st.data,
+   453→                staff: exists ? st.data.staff.map((s) => (s.id === id ? member : s)) : [...st.data.staff, member],
+   454→                assignments: exists ? st.data.assignments : [...st.data.assignments, { id: uid('asg'), staffId: id, ayId: st.ayId, type: input.role === 'Class Teacher' ? 'Class Teacher' : 'Subject Teacher', start: input.startDate }],
+   455→              },
+   456→            };
+   457→          });
+   458→          audit(input.invite ? 'Saved staff and sent invite' : 'Saved staff', 'Staff', id);
+   459→          toast(input.invite ? 'Staff saved — invite sent' : 'Staff saved', 'success');
+   460→          return id;
+   461→        },
+   462→        deactivateStaff: (staffId) => {
+   463→          set((st) => ({ data: { ...st.data, staff: st.data.staff.map((s) => (s.id === staffId ? { ...s, status: 'inactive' as const } : s)) } }));
+   464→          audit('Deactivated staff', 'Staff', staffId);
+   465→          toast('Staff deactivated', 'info');
+   466→        },
+   467→        resetStaffAccess: (staffId) => {
+   468→          audit('Reset access', 'Staff', staffId);
+   469→          toast('Reset link sent', 'success', 'The staff member will set a new password on next sign-in.');
+   470→        },
+   471→        addAssignment: (input) => {
+   472→          set((st) => ({ data: { ...st.data, assignments: [...st.data.assignments, { id: uid('asg'), ayId: st.ayId, ...input }] } }));
+   473→          audit('Added assignment', 'Assignment', input.staffId);
+   474→          toast('Assignment added', 'success');
+   475→        },
+   476→        endAssignment: (assignmentId, end) => {
+   477→          set((st) => ({ data: { ...st.data, assignments: st.data.assignments.map((a) => (a.id === assignmentId ? { ...a, end } : a)) } }));
+   478→          audit('Ended assignment', 'Assignment', assignmentId);
+   479→          toast('Assignment ended', 'info');
+   480→        },
+   481→
+   482→        /* ── attendance ── */
+   483→        saveRegisterDraft: ({ date, sectionId, marks, reasons }) => {
+   484→          set((st) => {
+   485→            const existing = st.data.registers.find((r) => r.date === date && r.sectionId === sectionId);
+   486→            if (existing) {
+   487→              return {
+   488→                data: {
+   489→                  ...st.data,
+   490→                  registers: st.data.registers.map((r) =>
+   491→                    r.id === existing.id ? { ...r, marks, reasons, status: 'draft' as const } : r,
+   492→                  ),
+   493→                },
+   494→              };
+   495→            }
+   496→            return {
+   497→              data: {
+   498→                ...st.data,
+   499→                registers: [...st.data.registers, { id: `reg-${date}-${sectionId}`, date, sectionId, marks, reasons, status: 'draft', revision: 1 }],
+   500→              },
+   501→            };
+   502→          });
+   503→          toast('Draft saved', 'info', 'You can finish marking later.');
+   504→        },
+   505→        markRemainingPresent: ({ date, sectionId }) => {
+   506→          set((st) => {
+   507→            const roster = rosterOf(st.data, sectionId, st.ayId);
+   508→            const reg = st.data.registers.find((r) => r.date === date && r.sectionId === sectionId);
+   509→            const marks = { ...(reg?.marks ?? {}) };
+   510→            for (const { student } of roster) {
+   511→              if (!marks[student.id]) marks[student.id] = 'P';
+   512→            }
+   513→            return {
+   514→              data: {
+   515→                ...st.data,
+   516→                registers: reg
+   517→                  ? st.data.registers.map((r) => (r.id === reg.id ? { ...r, marks, status: r.status === 'unmarked' ? 'draft' : r.status } : r))
+   518→                  : [...st.data.registers, { id: `reg-${date}-${sectionId}`, date, sectionId, marks, reasons: {}, status: 'draft', revision: 1 }],
+   519→              },
+   520→            };
+   521→          });
+   522→          toast('Remaining students marked present', 'success');
+   523→        },
+   524→        submitRegister: ({ date, sectionId, actorRole }) => {
+   525→          const st = get();
+   526→          const reg = st.data.registers.find((r) => r.date === date && r.sectionId === sectionId);
+   527→          if (!reg) return;
+   528→          const who = actorRole === 'teacher' ? st.session.userName : st.session.userName;
+   529→          set((s2) => ({
+   530→            data: {
+   531→              ...s2.data,
+   532→              registers: s2.data.registers.map((r) =>
+   533→                r.id === reg.id
+   534→                  ? { ...r, status: 'submitted' as const, submittedAt: nowIso().slice(0, 16), submittedBy: who, revision: r.revision + 1 }
+   535→                  : r,
+   536→              ),
+   537→            },
+   538→          }));
+   539→          audit('Submitted register', 'Register', `reg-${date}-${sectionId}`);
+   540→          toast('Register submitted', 'success', `${getSection(st.data, sectionId)?.name ?? ''} register is now locked for the day.`);
+   541→        },
+   542→        requestCorrection: ({ date, sectionId, studentId, from, to, reason, note, requestedBy }) => {
+   543→          const id = uid('crq');
+   544→          set((st) => {
+   545→            const no = `CORR-${String(st.data.corrections.length + 33).padStart(4, '0')}`;
+   546→            return {
+   547→              data: {
+   548→                ...st.data,
+   549→                corrections: [
+   550→                  { id, no, date, sectionId, studentId, from, to, reason, note, requestedBy, requestedAt: nowIso().slice(0, 16), status: 'pending' },
+   551→                  ...st.data.corrections,
+   552→                ],
+   553→              },
+   554→            };
+   555→          });
+   556→          audit('Requested attendance correction', 'Correction', id);
+   557→          toast('Correction requested', 'success', 'The office will review this request.');
+   558→          return id;
+   559→        },
+   560→        resolveCorrection: (correctionId, approve, note) => {
+   561→          const st = get();
+   562→          const c = st.data.corrections.find((x) => x.id === correctionId);
+   563→          if (!c) return;
+   564→          set((s2) => ({
+   565→            data: {
+   566→              ...s2.data,
+   567→              corrections: s2.data.corrections.map((x) =>
+   568→                x.id === correctionId
+   569→                  ? { ...x, status: approve ? 'approved' as const : 'rejected' as const, reviewer: s2.session.userName, resolvedAt: nowIso().slice(0, 16), resolutionNote: note }
+   570→                  : x,
+   571→              ),
+   572→              registers: approve
+   573→                ? s2.data.registers.map((r) =>
+   574→                    r.date === c.date && r.sectionId === c.sectionId
+   575→                      ? { ...r, marks: { ...r.marks, [c.studentId]: c.to }, revision: r.revision + 1 }
+   576→                      : r,
+   577→                  )
+   578→                : s2.data.registers,
+   579→            },
+   580→          }));
+   581→          audit(approve ? 'Approved correction' : 'Rejected correction', 'Correction', correctionId);
+   582→          toast(approve ? 'Correction approved' : 'Correction rejected', approve ? 'success' : 'info');
+   583→        },
+   584→        bumpRegisterRevision: (date, sectionId) => {
+   585→          set((st) => ({
+   586→            data: {
+   587→              ...st.data,
+   588→              registers: st.data.registers.map((r) => (r.date === date && r.sectionId === sectionId ? { ...r, revision: r.revision + 1 } : r)),
+   589→            },
+   590→          }));
+   591→        },
+   592→
+   593→        /* ── fees ── */
+   594→        postCharges: ({ planId, studentIds, actorName }) => {
+   595→          const st = get();
+   596→          const plan = st.data.feePlans.find((p) => p.id === planId);
+   597→          if (!plan) return 0;
+   598→          let created = 0;
+   599→          const newCharges: ErpData['charges'][number][] = [];
+   600→          for (const sid of studentIds) {
+   601→            for (const inst of plan.installments) {
+   602→              const exists = st.data.charges.some((c) => c.studentId === sid && c.installmentId === inst.id && c.status === 'posted');
+   603→              if (!exists) {
+   604→                newCharges.push({
+   605→                  id: uid('chg'), studentId: sid, ayId: plan.ayId, planId: plan.id,
+   606→                  installmentId: inst.id, head: `Annual fee — ${inst.name}`, amount: inst.amount,
+   607→                  date: st.schoolDate, dueDate: inst.dueDate, status: 'posted',
+   608→                });
+   609→                created += 1;
+   610→              }
+   611→            }
+   612→          }
+   613→          set((s2) => ({ data: { ...s2.data, charges: [...s2.data.charges, ...newCharges] } }));
+   614→          audit('Posted fee charges', 'Charge batch', planId);
+   615→          toast('Charges posted', 'success', `${created} charge${created === 1 ? '' : 's'} posted by ${actorName}.`);
+   616→          return created;
+   617→        },
+   618→        recordPayment: ({ studentId, amount, mode, reference, notes, collectedBy }) => {
+   619→          const st = get();
+   620→          const open = st.data.charges
+   621→            .filter((c) => c.studentId === studentId && c.status === 'posted')
+   622→            .map((c) => ({ id: c.id, amount: Math.max(0, c.amount - chargePaid(st.data, c.id)), dueDate: c.dueDate }))
+   623→            .filter((c) => c.amount > 0);
+   624→          const due = open.reduce((t, c) => t + c.amount, 0);
+   625→          if (amount <= 0 || amount > due) {
+   626→            toast('Payment not confirmed', 'error', 'Amount must be greater than ₹0.00 and not exceed the outstanding dues.');
+   627→            return null;
+   628→          }
+   629→          const allocations = allocateCharges(open, amount);
+   630→          const paymentId = uid('pay');
+   631→          const receiptId = uid('rcp');
+   632→          const receiptNo = st.settings.receiptPrefix + String(st.data.receipts.length + 1240).padStart(5, '0');
+   633→          set((s2) => ({
+   634→            data: {
+   635→              ...s2.data,
+   636→              payments: [...s2.data.payments, { id: paymentId, studentId, date: s2.schoolDate, amount, mode, reference, notes, collectedBy, allocations, status: 'posted' }],
+   637→              receipts: [...s2.data.receipts, { id: receiptId, no: receiptNo, paymentId, studentId, date: s2.schoolDate, amount, mode, collectedBy }],
+   638→            },
+   639→          }));
+   640→          audit('Recorded payment', 'Payment', receiptNo);
+   641→          toast('Payment confirmed', 'success', `Receipt ${receiptNo} issued.`);
+   642→          return { paymentId, receiptId, receiptNo };
+   643→        },
+   644→        requestReversal: ({ paymentId, reason, requestedBy }) => {
+   645→          const st = get();
+   646→          const pay = st.data.payments.find((p) => p.id === paymentId);
+   647→          if (!pay) return;
+   648→          const id = uid('frq');
+   649→          set((s2) => ({
+   650→            data: {
+   651→              ...s2.data,
+   652→              payments: s2.data.payments.map((p) => (p.id === paymentId ? { ...p, status: 'reversal_requested' as const } : p)),
+   653→              feeRequests: [
+   654→                {
+   655→                  id, type: 'reversal', paymentId, studentId: pay.studentId,
+   656→                  originalRef: s2.data.receipts.find((r) => r.paymentId === paymentId)?.no ?? paymentId,
+   657→                  amount: pay.amount, reason, requestedBy, requestedAt: nowIso().slice(0, 16), status: 'pending',
+   658→                } as FeeRequest,
+   659→                ...s2.data.feeRequests,
+   660→              ],
+   661→            },
+   662→          }));
+   663→          audit('Requested payment reversal', 'Fee request', id);
+   664→          toast('Reversal requested', 'info', 'Awaiting approval.');
+   665→        },
+   666→        requestAdjustment: ({ chargeId, amount, reason, requestedBy }) => {
+   667→          const st = get();
+   668→          const ch = st.data.charges.find((c) => c.id === chargeId);
+   669→          if (!ch) return;
+   670→          const id = uid('frq');
+   671→          set((s2) => ({
+   672→            data: {
+   673→              ...s2.data,
+   674→              feeRequests: [
+   675→                { id, type: 'adjustment', chargeId, studentId: ch.studentId, originalRef: ch.head, amount, reason, requestedBy, requestedAt: nowIso().slice(0, 16), status: 'pending' } as FeeRequest,
+   676→                ...s2.data.feeRequests,
+   677→              ],
+   678→            },
+   679→          }));
+   680→          audit('Requested fee adjustment', 'Fee request', id);
+   681→          toast('Adjustment requested', 'info', 'Awaiting approval.');
+   682→        },
+   683→        resolveFeeRequest: (feeRequestId, approve, reviewer, note) => {
+   684→          const st = get();
+   685→          const fr = st.data.feeRequests.find((f) => f.id === feeRequestId);
+   686→          if (!fr) return;
+   687→          set((s2) => ({
+   688→            data: {
+   689→              ...s2.data,
+   690→              feeRequests: s2.data.feeRequests.map((f) =>
+   691→                f.id === feeRequestId ? { ...f, status: approve ? 'approved' as const : 'rejected' as const, reviewer, resolvedAt: nowIso().slice(0, 16) } : f,
+   692→              ),
+   693→              payments: fr.type === 'reversal' && fr.paymentId && approve
+   694→                ? s2.data.payments.map((p) => (p.id === fr.paymentId ? { ...p, status: 'reversed' as const } : p))
+   695→                : s2.data.payments,
+   696→              charges: fr.type === 'adjustment' && fr.chargeId && approve
+   697→                ? s2.data.charges.map((c) => (c.id === fr.chargeId ? { ...c, amount: Math.max(0, c.amount - fr.amount) } : c))
+   698→                : s2.data.charges,
+   699→            },
+   700→          }));
+   701→          audit(approve ? 'Approved fee request' : 'Rejected fee request', 'Fee request', feeRequestId, note === 'denied' ? 'denied' : 'success');
+   702→          toast(approve ? 'Request approved' : 'Request rejected', approve ? 'success' : 'info');
+   703→        },
+   704→        saveDayClose: ({ date, cashCounted, upiVerified, bankVerified, explanation }) => {
+   705→          const st = get();
+   706→          const cashExpected = st.data.payments.filter((p) => p.date === date && p.mode === 'Cash' && p.status === 'posted').reduce((t, p) => t + p.amount, 0);
+   707→          const upi = st.data.payments.filter((p) => p.date === date && p.mode === 'UPI' && p.status === 'posted').reduce((t, p) => t + p.amount, 0);
+   708→          const bank = st.data.payments.filter((p) => p.date === date && p.mode === 'Bank transfer' && p.status === 'posted').reduce((t, p) => t + p.amount, 0);
+   709→          const variance = cashExpected - cashCounted;
+   710→          set((s2) => ({
+   711→            data: {
+   712→              ...s2.data,
+   713→              dayCloses: [
+   714→                ...s2.data.dayCloses.filter((dc) => dc.date !== date),
+   715→                { id: `dc-${date}`, date, cashExpected, cashCounted, upiVerified: upiVerified || upi, bankVerified: bankVerified || bank, variance, explanation, status: 'draft' as const },
+   716→              ],
+   717→            },
+   718→          }));
+   719→          audit('Saved day-close count', 'Day close', date);
+   720→          toast('Count saved', 'info', variance === 0 ? 'No variance.' : `Variance ₹${Math.abs(variance).toLocaleString('en-IN')}.`);
+   721→        },
+   722→        submitDayClose: ({ date, reviewer }) => {
+   723→          set((st) => ({
+   724→            data: { ...st.data, dayCloses: st.data.dayCloses.map((dc) => (dc.date === date ? { ...dc, status: 'closed' as const, reviewer } : dc)) },
+   725→          }));
+   726→          audit('Closed business day', 'Day close', date);
+   727→          toast('Day closed', 'success', `Business day ${date} is closed.`);
+   728→        },
+   729→
+   730→        /* ── notices ── */
+   731→        saveNotice: ({ id, title, message, audience, gradeId, sectionId, publishDate, expiryDate, attachment, author, status: forcedStatus }) => {
+   732→          const st = get();
+   733→          const nid = id ?? uid('not');
+   734→          const computed: ErpData['notices'][number]['status'] = forcedStatus
+   735→            ?? (id ? st.data.notices.find((n) => n.id === id)?.status ?? 'draft' : publishDate > st.schoolDate ? 'scheduled' : 'published');
+   736→          set((s2) => ({
+   737→            data: {
+   738→              ...s2.data,
+   739→              notices: id
+   740→                ? s2.data.notices.map((n) => (n.id === id ? { ...n, title, message, audience, gradeId, sectionId, publishDate, expiryDate, attachment } : n))
+   741→                : [...s2.data.notices, { id: nid, title, message, audience, gradeId, sectionId, publishDate, expiryDate, attachment, status: computed, author, createdAt: nowIso().slice(0, 16) }],
+   742→            },
+   743→          }));
+   744→          audit(id ? 'Saved notice draft' : 'Created notice', 'Notice', nid);
+   745→          if (!id) toast('Notice created', 'success');
+   746→          return nid;
+   747→        },
+   748→        publishNotice: (noticeId) => {
+   749→          set((st) => ({
+   750→            data: { ...st.data, notices: st.data.notices.map((n) => (n.id === noticeId ? { ...n, status: 'published' as const, publishedAt: nowIso().slice(0, 16), publishDate: st.schoolDate } : n)) },
+   751→          }));
+   752→          audit('Published notice', 'Notice', noticeId);
+   753→          toast('Notice published', 'success', 'Parents and teachers can now see it in their apps.');
+   754→        },
+   755→        expireNotice: (noticeId) => {
+   756→          set((st) => ({ data: { ...st.data, notices: st.data.notices.map((n) => (n.id === noticeId ? { ...n, status: 'expired' as const } : n)) } }));
+   757→          audit('Expired notice', 'Notice', noticeId);
+   758→          toast('Notice expired', 'info');
+   759→        },
+   760→        duplicateNotice: (noticeId) => {
+   761→          const st = get();
+   762→          const n = st.data.notices.find((x) => x.id === noticeId);
+   763→          if (!n) return '';
+   764→          const id = uid('not');
+   765→          set((s2) => ({
+   766→            data: {
+   767→              ...s2.data,
+   768→              notices: [...s2.data.notices, { ...n, id, title: `${n.title} (copy)`, status: 'draft', author: s2.session.userName, createdAt: nowIso().slice(0, 16), publishedAt: undefined }],
+   769→            },
+   770→          }));
+   771→          toast('Notice duplicated as draft', 'success');
+   772→          return id;
+   773→        },
+   774→        markNoticeRead: (noticeId) => {
+   775→          set((st) => ({ readNotices: { ...st.readNotices, [noticeId]: true } }));
+   776→        },
+   777→
+   778→        /* ── ops ── */
+   779→        createExport: (type, requestedBy) => {
+   780→          const st = get();
+   781→          const id = uid('exp');
+   782→          const expires = new Date(Date.now() + st.settings.exportRetentionDays * 86400000).toISOString().slice(0, 10);
+   783→          set((s2) => ({
+   784→            data: {
+   785→              ...s2.data,
+   786→              exports: [{ id, type, requestedBy, requestedAt: nowIso().slice(0, 16), status: 'running', expiresAt: expires }, ...s2.data.exports],
+   787→            },
+   788→          }));
+   789→          audit('Created export', 'Export', id);
+   790→          toast('Export queued', 'info', `${type} is being generated.`);
+   791→          setTimeout(() => {
+   792→            const s3 = get();
+   793→            const columns = ['Admission number', 'Student', 'Grade-Section', 'Value'];
+   794→            let rows: string[][] = [];
+   795→            if (type.toLowerCase().includes('dues')) {
+   796→              rows = s3.data.students.filter((s) => s.status === 'active').slice(0, 40).map((s) => {
+   797→                const due = s3.data.charges.filter((c) => c.studentId === s.id);
+   798→                const unpaid = due.reduce((t, c) => t + Math.max(0, c.amount - chargePaid(s3.data, c.id)), 0);
+   799→                return [s.admNo, s.displayName, '—', String(unpaid)];
+   800→              });
+   801→            } else if (type.toLowerCase().includes('collection')) {
+   802→              rows = s3.data.payments.slice(0, 40).map((p) => [p.id, p.date, p.mode, String(p.amount)]);
+   803→            } else {
+   804→              rows = s3.data.students.slice(0, 40).map((s) => [s.admNo, s.displayName, '—', s.status]);
+   805→            }
+   806→            set((s4) => ({
+   807→              data: { ...s4.data, exports: s4.data.exports.map((e) => (e.id === id ? { ...e, status: 'ready', rows, columns } : e)) },
+   808→            }));
+   809→          }, 2500);
+   810→        },
+   811→        deleteExport: (exportId) => {
+   812→          set((st) => ({ data: { ...st.data, exports: st.data.exports.filter((e) => e.id !== exportId) } }));
+   813→          toast('Expired copy deleted', 'info');
+   814→        },
+   815→        createOfficeTask: ({ studentId, note, from }) => {
+   816→          set((st) => ({
+   817→            data: { ...st.data, officeTasks: [{ id: uid('ot'), from, studentId, note, at: nowIso().slice(0, 16), status: 'open' }, ...st.data.officeTasks] },
+   818→          }));
+   819→          toast('Office task created', 'success', 'The school office will review your report.');
+   820→        },
+   821→        resolveOfficeTask: (taskId) => {
+   822→          set((st) => ({ data: { ...st.data, officeTasks: st.data.officeTasks.map((t) => (t.id === taskId ? { ...t, status: 'resolved' as const } : t)) } }));
+   823→        },
+   824→        markAlertReviewed: (alertId) => {
+   825→          set((st) => ({ reviewedAlerts: st.reviewedAlerts.includes(alertId) ? st.reviewedAlerts : [...st.reviewedAlerts, alertId] }));
+   826→          toast('Marked reviewed', 'success');
+   827→        },
+   828→
+   829→        addAuditEvent: (action, resource, resourceId, result = 'success') => audit(action, resource, resourceId, result),
+   830→
+   831→        /* ── settings & theme ── */
+   832→        updateSettings: (patch) => {
+   833→          set((st) => ({ settings: { ...st.settings, ...patch } }));
+   834→          audit('Updated settings', 'Settings', Object.keys(patch).join(','));
+   835→          toast('Settings saved', 'success');
+   836→        },
+   837→        upsertFeePlan: (input) => {
+   838→          const id = input.id ?? uid('plan');
+   839→          set((st) => ({
+   840→            data: {
+   841→              ...st.data,
+   842→              feePlans: st.data.feePlans.some((p) => p.id === id)
+   843→                ? st.data.feePlans.map((p) => (p.id === id ? { ...p, ...input } : p))
+   844→                : [...st.data.feePlans, { ...input, id }],
+   845→            },
+   846→          }));
+   847→          audit('Saved fee plan', 'Fee plan', id);
+   848→          toast('Fee plan saved', 'success', input.status === 'draft' ? 'Saved as draft.' : undefined);
+   849→          return id;
+   850→        },
+   851→        addGrade: (name) => {
+   852→          set((st) => ({
+   853→            data: { ...st.data, grades: [...st.data.grades, { id: uid('g'), name, order: st.data.grades.length + 1, status: 'active' }] },
+   854→          }));
+   855→          audit('Added grade', 'Grade', name);
+   856→          toast('Grade added', 'success');
+   857→        },
+   858→        archiveGrade: (gradeId) => {
+   859→          set((st) => ({ data: { ...st.data, grades: st.data.grades.map((g) => (g.id === gradeId ? { ...g, status: 'archived' as const } : g)) } }));
+   860→          audit('Archived grade', 'Grade', gradeId);
+   861→          toast('Grade archived', 'info');
+   862→        },
+   863→        addSection: (input) => {
+   864→          set((st) => ({
+   865→            data: { ...st.data, sections: [...st.data.sections, { id: uid('s'), ayId: st.ayId, status: 'active' as const, ...input }] },
+   866→          }));
+   867→          audit('Added section', 'Section', input.name);
+   868→          toast('Section added', 'success');
+   869→        },
+   870→        updateSection: (sectionId, patch) => {
+   871→          set((st) => ({ data: { ...st.data, sections: st.data.sections.map((s) => (s.id === sectionId ? { ...s, ...patch } : s)) } }));
+   872→          audit('Updated section', 'Section', sectionId);
+   873→        },
+   874→        archiveSection: (sectionId) => {
+   875→          set((st) => ({ data: { ...st.data, sections: st.data.sections.map((s) => (s.id === sectionId ? { ...s, status: 'archived' as const } : s)) } }));
+   876→          audit('Archived section', 'Section', sectionId);
+   877→          toast('Section archived', 'info');
+   878→        },
+   879→        addHoliday: (input) => {
+   880→          set((st) => ({ data: { ...st.data, holidays: [...st.data.holidays, { id: uid('hol'), ...input }] } }));
+   881→          audit('Updated calendar', 'Holiday', input.date);
+   882→          toast('Calendar updated', 'success');
+   883→        },
+   884→        activateYear: (ayId) => {
+   885→          set((st) => ({
+   886→            data: {
+   887→              ...st.data,
+   888→              academicYears: st.data.academicYears.map((a) => (a.id === ayId ? { ...a, status: 'active' as const } : a.status === 'active' ? { ...a, status: 'closed' as const } : a)),
+   889→            },
+   890→          }));
+   891→          set({ ayId });
+   892→          audit('Activated academic year', 'Academic year', ayId);
+   893→          toast('Academic year activated', 'success');
+   894→        },
+   895→        closeYear: (ayId) => {
+   896→          set((st) => ({ data: { ...st.data, academicYears: st.data.academicYears.map((a) => (a.id === ayId ? { ...a, status: 'closed' as const } : a)) } }));
+   897→          audit('Closed academic year', 'Academic year', ayId);
+   898→          toast('Academic year closed', 'info');
+   899→        },
+   900→        updateTheme: (patch) => {
+   901→          const theme = { ...get().theme, ...patch };
+   902→          set({ theme });
+   903→          applyThemeVars(theme);
+   904→        },
+   905→        resetDemo: () => {
+   906→          try {
+   907→            localStorage.removeItem('school-erp-proto-v1');
+   908→          } catch {
+   909→            /* noop */
+   910→          }
+   911→          set({
+   912→            session: { signedIn: false, role: 'school_admin', userName: 'Sunita Deshpande' },
+   913→            route: { screen: 'A01', params: {} },
+   914→            schoolDate: SCHOOL_DATE_DEFAULT,
+   915→            ayId: IDS.ay2627,
+   916→            data: buildSeedData(),
+   917→            readNotices: {},
+   918→            reviewedAlerts: [],
+   919→            visited: [],
+   920→            toasts: [],
+   921→            dialog: null,
+   922→          });
+   923→          applyThemeVars(get().theme);
+   924→          location.reload();
+   925→        },
+   926→      };
+   927→    },
+   928→    {
+   929→      name: 'school-erp-proto-v1',
+   930→      version: 1,
+   931→      storage: createJSONStorage(() => safeStorage),
+   932→      partialize: (st) => ({
+   933→        session: st.session,
+   934→        route: st.route,
+   935→        schoolDate: st.schoolDate,
+   936→        ayId: st.ayId,
+   937→        campusId: st.campusId,
+   938→        sidebarCollapsed: st.sidebarCollapsed,
+   939→        readNotices: st.readNotices,
+   940→        reviewedAlerts: st.reviewedAlerts,
+   941→        visited: st.visited,
+   942→        theme: st.theme,
+   943→        settings: st.settings,
+   944→        data: st.data,
+   945→      }),
+   946→      onRehydrateStorage: () => (state) => {
+   947→        if (state) {
+   948→          state.booted = true;
+   949→          applyThemeVars(state.theme);
+   950→          setTimeout(() => {
+   951→            useErp.setState({ booted: true });
+   952→          }, 0);
+   953→        }
+   954→      },
+   955→    },
+   956→  ),
+   957→);
+   958→
+   959→/** Convenience selector */
+   960→export const useData = () => useErp((s) => s.data);
+
+[showing lines 400-960 of 961; use offset=961 with limit to continue reading]

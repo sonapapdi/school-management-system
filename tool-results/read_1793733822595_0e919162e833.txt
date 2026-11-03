@@ -1,0 +1,566 @@
+     1→import type {
+     2→  AttendanceRegister, Charge, CorrectionRequest, DayClose, Enrollment, ErpData, ExportJob,
+     3→  FeePlan, FeeRequest, Guardian, Holiday, ImportBatch, ImportRow, MarkCode, Notice, Payment,
+     4→  PaymentMode, Receipt, Section, StaffAssignment, StaffMember, Student,
+     5→} from './types';
+     6→import { mulberry32 } from './utils';
+     7→
+     8→export const SCHOOL_DATE_DEFAULT = '2026-07-21';
+     9→export const AY_DEFAULT = 'ay-2026-27';
+    10→
+    11→export const IDS = {
+    12→  ananya: 'stu-ananya',
+    13→  farah: 'stf-farah',
+    14→  meera: 'stf-meera',
+    15→  sunita: 'stf-sunita',
+    16→  amit: 'stf-amit',
+    17→  priya: 'stf-priya',
+    18→  rajeshGuardian: 'grd-rajesh',
+    19→  snehaGuardian: 'grd-sneha',
+    20→  section7A: 's-7a',
+    21→  ay2627: 'ay-2026-27',
+    22→  ay2526: 'ay-2025-26',
+    23→  campusMain: 'main',
+    24→  plan2627: 'plan-2026',
+    25→} as const;
+    26→
+    27→export const SESSION_USERS: Record<string, { name: string; staffId?: string }> = {
+    28→  platform_operator: { name: 'Platform Operations' },
+    29→  school_admin: { name: 'Sunita Deshpande', staffId: 'stf-sunita' },
+    30→  principal: { name: 'Meera Kulkarni', staffId: 'stf-meera' },
+    31→  accountant: { name: 'Amit Joshi', staffId: 'stf-amit' },
+    32→  receptionist: { name: 'Priya Nair', staffId: 'stf-priya' },
+    33→  teacher: { name: 'Farah Khan', staffId: 'stf-farah' },
+    34→  parent: { name: 'Rajesh Patil' },
+    35→};
+    36→
+    37→const FEMALE = ['Ananya','Aarohi','Diya','Isha','Ishita','Kavya','Myra','Navya','Pari','Riya','Saanvi','Sara','Shanaya','Siya','Tanvi','Vaishnavi','Zara','Aditi','Ayesha','Gauri','Janhvi','Ketaki','Manasi','Mrunmayi','Nisha','Oviya','Prachi','Radhika','Rhea','Sanika','Shreya','Suhani','Trupti','Urvi','Veda','Aarya','Charvi','Devika','Esha','Kiara','Lavanya','Mira','Nitya','Prisha','Rani','Sai','Tara','Vaidehi'];
+    38→const MALE = ['Aarav','Advait','Agastya','Arjun','Aryan','Atharv','Ayaan','Dev','Dhruv','Ishaan','Kabir','Krishna','Mihir','Neel','Om','Parth','Pranav','Reyansh','Rohan','Rudra','Samar','Shaan','Shlok','Vihaan','Vivaan','Yash','Aditya','Akash','Aniket','Ansh','Chinmay','Gaurav','Jay','Kartik','Madhav','Nilesh','Ojas','Prathamesh','Rajveer','Rohit','Sagar','Siddharth','Tanmay','Uday','Varad','Vedant','Vikrant','Zaid'];
+    39→const SUR = ['Patil','Deshmukh','Kulkarni','Joshi','Sharma','Khan','Pawar','Jadhav','Kadam','Shinde','Bhosale','More','Salunkhe','Wagh','Thorat','Chavan','Nair','Menon','Iyer','Pillai','Rao','Reddy','Gupta','Agarwal','Mehta','Shah','Singh','Verma','Tiwari','Mishra','Yadav','Kamble','Gaikwad','Rane','Naik','Sawant','Bhoir','Mhatre','Date','Dixit','Bapat','Ranade','Gokhale','Sathe'];
+    40→
+    41→const SECTION_COUNTS: Record<number, number> = { 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 4, 8: 3, 9: 3, 10: 3 };
+    42→const NEW_ADMITS = [120, 205, 240, 300, 310, 355, 390, 425, 460, 495, 530, 560, 590, 610, 625];
+    43→const TODAY_PAYERS = [
+    44→  { idx: 100, amount: 28300, mode: 'UPI' as PaymentMode },
+    45→  { idx: 150, amount: 13700, mode: 'Cash' as PaymentMode },
+    46→  { idx: 300, amount: 33300, mode: 'UPI' as PaymentMode },
+    47→  { idx: 450, amount: 28300, mode: 'UPI' as PaymentMode },
+    48→  { idx: 500, amount: 20900, mode: 'Bank transfer' as PaymentMode },
+    49→];
+    50→
+    51→function pad(n: number, w = 4): string {
+    52→  return String(n).padStart(w, '0');
+    53→}
+    54→function refFor(mode: PaymentMode, r: () => number): string | undefined {
+    55→  if (mode === 'UPI') return `UPI/${pad(Math.floor(r() * 899999) + 100000, 6)}`;
+    56→  if (mode === 'Bank transfer') return `NEFT/AV${pad(Math.floor(r() * 8999) + 1000, 4)}`;
+    57→  if (mode === 'Cheque') return `CHQ/00${pad(Math.floor(r() * 899) + 100, 3)}`;
+    58→  return undefined;
+    59→}
+    60→
+    61→/** Allocate amount across unpaid charges, oldest due first. */
+    62→export function allocateCharges(
+    63→  open: { id: string; amount: number; dueDate: string }[],
+    64→  amount: number,
+    65→): { chargeId: string; amount: number }[] {
+    66→  const sorted = [...open].sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    67→  let left = amount;
+    68→  const out: { chargeId: string; amount: number }[] = [];
+    69→  for (const c of sorted) {
+    70→    if (left <= 0) break;
+    71→    const pay = Math.min(left, c.amount);
+    72→    if (pay > 0) out.push({ chargeId: c.id, amount: pay });
+    73→    left -= pay;
+    74→  }
+    75→  return out;
+    76→}
+    77→
+    78→export function buildSeedData(): ErpData {
+    79→  const r = mulberry32(20260721);
+    80→  const pick = <T,>(arr: T[]): T => arr[Math.floor(r() * arr.length)];
+    81→
+    82→  const grades = Array.from({ length: 10 }, (_, i) => ({
+    83→    id: `g${i + 1}`, name: `Grade ${i + 1}`, order: i + 1, status: 'active' as const,
+    84→  }));
+    85→
+    86→  const sections: Section[] = [];
+    87→  for (let g = 1; g <= 10; g++) {
+    88→    for (let s = 0; s < SECTION_COUNTS[g]; s++) {
+    89→      sections.push({
+    90→        id: `s-${g}${String.fromCharCode(97 + s)}`,
+    91→        ayId: IDS.ay2627, gradeId: `g${g}`, name: String.fromCharCode(65 + s),
+    92→        capacity: 40, status: 'active',
+    93→      });
+    94→    }
+    95→  }
+    96→
+    97→  /* ── Staff ── */
+    98→  const staff: StaffMember[] = [
+    99→    { id: IDS.meera, code: 'STF-001', name: 'Meera Kulkarni', role: 'Principal', mobile: '+91 98220 11001', email: 'meera.kulkarni@sunrisepublic.edu.in', startDate: '2015-06-01', status: 'active', lastSignIn: '2026-07-21T07:42' },
+   100→    { id: IDS.sunita, code: 'STF-002', name: 'Sunita Deshpande', role: 'Admin Officer', mobile: '+91 98220 11002', email: 'sunita.deshpande@sunrisepublic.edu.in', startDate: '2016-04-11', status: 'active', lastSignIn: '2026-07-21T07:31' },
+   101→    { id: IDS.amit, code: 'STF-003', name: 'Amit Joshi', role: 'Accountant', mobile: '+91 98220 11003', email: 'amit.joshi@sunrisepublic.edu.in', startDate: '2018-06-04', status: 'active', lastSignIn: '2026-07-21T08:05' },
+   102→    { id: IDS.priya, code: 'STF-004', name: 'Priya Nair', role: 'Receptionist', mobile: '+91 98220 11004', email: 'priya.nair@sunrisepublic.edu.in', startDate: '2021-06-15', status: 'active', lastSignIn: '2026-07-21T07:58' },
+   103→    { id: 'stf-vikram', code: 'STF-005', name: 'Vikram Rao', role: 'Coordinator', mobile: '+91 98220 11005', email: 'vikram.rao@sunrisepublic.edu.in', startDate: '2019-06-10', status: 'active', lastSignIn: '2026-07-20T16:12' },
+   104→    { id: IDS.farah, code: 'STF-006', name: 'Farah Khan', role: 'Class Teacher', mobile: '+91 98220 11006', email: 'farah.khan@sunrisepublic.edu.in', startDate: '2020-06-01', status: 'active', lastSignIn: '2026-07-21T07:50' },
+   105→  ];
+   106→  const teacherFirst = FEMALE.concat(MALE);
+   107→  const teacherPool: StaffMember[] = [];
+   108→  for (let i = 7; i <= 42; i++) {
+   109→    const name = `${teacherFirst[(i * 7) % teacherFirst.length]} ${SUR[(i * 11) % SUR.length]}`;
+   110→    teacherPool.push({
+   111→      id: `stf-t${i}`, code: `STF-${pad(i, 3)}`, name,
+   112→      role: i <= 36 ? 'Class Teacher' : 'Subject Teacher',
+   113→      mobile: `+91 98220 ${pad(11000 + i, 5)}`,
+   114→      email: `${name.toLowerCase().replace(/ /g, '.')}@sunrisepublic.edu.in`,
+   115→      startDate: `${2019 + (i % 6)}-06-${pad((i % 20) + 1, 2)}`,
+   116→      status: 'active',
+   117→      lastSignIn: i % 3 === 0 ? `2026-07-${pad(15 + (i % 6), 2)}T08:${pad(i % 50, 2)}` : '2026-07-21T08:12',
+   118→    });
+   119→  }
+   120→  staff.push(...teacherPool);
+   121→
+   122→  const assignments: StaffAssignment[] = [];
+   123→  for (const st of staff) {
+   124→    assignments.push({ id: `asg-${st.id}`, staffId: st.id, ayId: IDS.ay2627, type: st.role === 'Class Teacher' ? 'Class Teacher' : 'Subject Teacher', start: st.startDate });
+   125→  }
+   126→  // Class teachers: Farah → 7-A; pool t7..t36 → remaining 30 sections
+   127→  const orderedSections = [...sections];
+   128→  let poolIdx = 7;
+   129→  for (const sec of orderedSections) {
+   130→    if (sec.id === IDS.section7A) {
+   131→      sec.classTeacherId = IDS.farah;
+   132→    } else {
+   133→      const t = teacherPool.find((t) => t.id === `stf-t${poolIdx}`);
+   134→      poolIdx += 1;
+   135→      if (t) {
+   136→        sec.classTeacherId = t.id;
+   137→        assignments.push({ id: `asg-ct-${sec.id}`, staffId: t.id, ayId: IDS.ay2627, gradeId: sec.gradeId, sectionId: sec.id, type: 'Class Teacher', start: '2026-04-01' });
+   138→      }
+   139→    }
+   140→  }
+   141→  assignments.push({ id: 'asg-farah-7b', staffId: IDS.farah, ayId: IDS.ay2627, gradeId: 'g7', sectionId: 's-7b', type: 'Subject Teacher', start: '2026-04-01' });
+   142→  assignments.push({ id: 'asg-farah-8a', staffId: IDS.farah, ayId: IDS.ay2627, gradeId: 'g8', sectionId: 's-8a', type: 'Subject Teacher', start: '2026-04-01' });
+   143→  assignments.push({ id: 'asg-sub-9a', staffId: 'stf-t40', ayId: IDS.ay2627, gradeId: 'g9', sectionId: 's-9a', type: 'Substitute', start: '2026-07-20', end: '2026-07-31' });
+   144→
+   145→  /* ── Students, guardians, enrollments ── */
+   146→  const students: Student[] = [];
+   147→  const guardians: Guardian[] = [];
+   148→  const enrollments: Enrollment[] = [];
+   149→  const charges: Charge[] = [];
+   150→  const payments: Payment[] = [];
+   151→  const receipts: Receipt[] = [];
+   152→
+   153→  let admSeq = 1;
+   154→  let grSeq = 4100;
+   155→  let receiptSeq = 1;
+   156→  let stuIdx = 0;
+   157→  let paySeq = 1;
+   158→
+   159→  const nextAdm = (): string => {
+   160→    admSeq += 1;
+   161→    if (admSeq === 142) admSeq += 1;
+   162→    return `ADM-2026-${pad(admSeq)}`;
+   163→  };
+   164→  const nextGr = (): string => {
+   165→    grSeq += 1;
+   166→    if (grSeq === 4521) grSeq += 1;
+   167→    return String(grSeq);
+   168→  };
+   169→  const nextReceiptNo = (): string => {
+   170→    receiptSeq += 1;
+   171→    if (receiptSeq === 482) receiptSeq += 1;
+   172→    return `RCPT/2026/${pad(receiptSeq, 5)}`;
+   173→  };
+   174→  let ananyaReceiptId = '';
+   175→
+   176→  const extraSections = ['s-1a', 's-1b', 's-1c', 's-2a'];
+   177→
+   178→  for (const sec of orderedSections) {
+   179→    const gradeNum = Number(sec.gradeId.slice(1));
+   180→    let count = 20;
+   181→    if (sec.id === IDS.section7A) count = 24;
+   182→    else if (extraSections.includes(sec.id)) count = 21;
+   183→
+   184→    for (let roll = 1; roll <= count; roll++) {
+   185→      const isAnanya = sec.id === IDS.section7A && roll === 14;
+   186→      const gender: 'Female' | 'Male' = r() < 0.5 ? 'Female' : 'Male';
+   187→      const first = isAnanya ? 'Ananya' : pick(gender === 'Female' ? FEMALE : MALE);
+   188→      const last = isAnanya ? 'Patil' : pick(SUR);
+   189→      const id = isAnanya ? IDS.ananya : `stu-${pad(stuIdx + 1)}`;
+   190→      const birthYear = 2026 - (5 + gradeNum);
+   191→      const admNo = isAnanya ? 'ADM-2026-0142' : nextAdm();
+   192→      const grNo = isAnanya ? '4521' : nextGr();
+   193→      const admissionDate = isAnanya
+   194→        ? '2020-06-08'
+   195→        : NEW_ADMITS.includes(stuIdx)
+   196→          ? `2026-06-${pad(3 + (stuIdx % 12))}`
+   197→          : `${2026 - (gradeNum - 1) - (stuIdx % 3)}-06-${pad((stuIdx % 25) + 3)}`;
+   198→
+   199→      students.push({
+   200→        id, admNo, grNo,
+   201→        firstName: first,
+   202→        middleName: !isAnanya && r() < 0.3 ? pick(FEMALE.concat(MALE)) : undefined,
+   203→        lastName: last,
+   204→        displayName: `${first} ${last}`,
+   205→        dob: isAnanya ? '2013-11-19' : `${birthYear}-${pad(Math.floor(r() * 12) + 1, 2)}-${pad(Math.floor(r() * 27) + 1, 2)}`,
+   206→        gender,
+   207→        admissionDate,
+   208→        status: 'active',
+   209→      });
+   210→
+   211→      const fatherName = isAnanya ? 'Rajesh Patil' : `${pick(MALE)} ${last}`;
+   212→      const motherName = isAnanya ? 'Sneha Patil' : `${pick(FEMALE)} ${last}`;
+   213→      guardians.push({
+   214→        id: isAnanya ? IDS.rajeshGuardian : `grd-${id}-f`,
+   215→        studentId: id, name: fatherName, relationship: 'Father',
+   216→        mobile: isAnanya ? '+91 98220 44321' : `+91 9${pad(Math.floor(r() * 89999) + 10000, 5)} ${pad(Math.floor(r() * 89999) + 10000, 5)}`,
+   217→        email: isAnanya ? 'rajesh.patil@example.com' : `${fatherName.toLowerCase().replace(/ /g, '.')}@example.com`,
+   218→        communicationAllowed: true,
+   219→        appAccess: isAnanya || r() < 0.62,
+   220→        verified: isAnanya || r() < 0.9,
+   221→        invitedAt: isAnanya ? '2026-04-05T10:20' : r() < 0.62 ? '2026-04-06T09:30' : undefined,
+   222→      });
+   223→      if (isAnanya || r() < 0.35) {
+   224→        guardians.push({
+   225→          id: isAnanya ? IDS.snehaGuardian : `grd-${id}-m`,
+   226→          studentId: id, name: motherName, relationship: 'Mother',
+   227→          mobile: `+91 9${pad(Math.floor(r() * 89999) + 10000, 5)} ${pad(Math.floor(r() * 89999) + 10000, 5)}`,
+   228→          communicationAllowed: true,
+   229→          appAccess: isAnanya ? true : r() < 0.5,
+   230→          verified: isAnanya || r() < 0.85,
+   231→        });
+   232→      }
+   233→
+   234→      enrollments.push({
+   235→        id: `enr-${id}`, studentId: id, ayId: IDS.ay2627, sectionId: sec.id,
+   236→        rollNo: roll, start: admissionDate > '2026-04-01' ? admissionDate : '2026-04-01',
+   237→        status: 'active',
+   238→      });
+   239→
+   240→      /* Fee charges: 3 installments (+ admission fee for new admits) */
+   241→      const planId = IDS.plan2627;
+   242→      const inst: [string, string, number, string][] = [
+   243→        ['inst-t1', 'Term 1', 28300, '2026-04-10'],
+   244→        ['inst-t2', 'Term 2', 28300, '2026-07-10'],
+   245→        ['inst-t3', 'Term 3', 28300, '2026-10-10'],
+   246→      ];
+   247→      for (const [instId, instName, amount, dueDate] of inst) {
+   248→        charges.push({
+   249→          id: `chg-${id}-${instId}`, studentId: id, ayId: IDS.ay2627, planId,
+   250→          installmentId: instId, head: `Annual fee — ${instName}`, amount,
+   251→          date: '2026-04-01', dueDate, status: 'posted',
+   252→        });
+   253→      }
+   254→      if (NEW_ADMITS.includes(stuIdx)) {
+   255→        charges.push({
+   256→          id: `chg-${id}-adm`, studentId: id, ayId: IDS.ay2627, planId,
+   257→          head: 'Admission fee', amount: 5000, date: admissionDate,
+   258→          dueDate: '2026-07-01', status: 'posted',
+   259→        });
+   260→      }
+   261→
+   262→      stuIdx += 1;
+   263→    }
+   264→  }
+   265→
+   266→  // Withdrawn students (extra records; active count stays 628)
+   267→  for (const [i, w] of ['Pruthviraj Chavan', 'Sharvari Wagh'].entries()) {
+   268→    const id = `stu-w${i + 1}`;
+   269→    students.push({
+   270→      id, admNo: `ADM-2026-${pad(631 + i)}`, grNo: String(4531 + i),
+   271→      firstName: w.split(' ')[0], lastName: w.split(' ')[1], displayName: w,
+   272→      dob: `2011-0${3 + i}-1${4 + i}`, gender: i === 0 ? 'Male' : 'Female',
+   273→      admissionDate: '2026-04-01', status: 'withdrawn',
+   274→    });
+   275→    enrollments.push({ id: `enr-${id}`, studentId: id, ayId: IDS.ay2627, sectionId: 's-9a', rollNo: 25 + i, start: '2026-04-01', end: '2026-05-20', status: 'withdrawn', reason: 'Family relocation to Nagpur' });
+   276→  }
+   277→
+   278→  /* Enrollment history extras */
+   279→  enrollments.push({ id: 'enr-ananya-2526', studentId: IDS.ananya, ayId: IDS.ay2526, sectionId: 's-6b', rollNo: 21, start: '2025-04-01', end: '2026-03-31', status: 'promoted', reason: 'Promoted to Grade 7' });
+   280→  enrollments.push({ id: 'enr-hist-60-old', studentId: 'stu-0060', ayId: IDS.ay2627, sectionId: 's-3a', rollNo: 11, start: '2026-04-01', end: '2026-06-10', status: 'transferred', reason: 'Parent request — sibling alignment' });
+   281→  enrollments.push({ id: 'enr-hist-60-new', studentId: 'stu-0060', ayId: IDS.ay2627, sectionId: 's-3b', rollNo: 21, start: '2026-06-11', status: 'active' });
+   282→
+   283→  /* ── Payments & receipts ── */
+   284→  const chargeFor = (studentId: string, instId: string) =>
+   285→    charges.find((c) => c.studentId === studentId && c.installmentId === instId)!;
+   286→
+   287→  const defaulters = new Set<string>();
+   288→  let seen = 0;
+   289→  let ruleCount = 0;
+   290→  const ruleIdx: number[] = [];
+   291→  students.forEach((s, i) => {
+   292→    if (i % 25 === 17) ruleIdx.push(i);
+   293→  });
+   294→  const studentsInOrder = students.filter((s) => s.status === 'active');
+   295→  // 25 rule-picked defaulters; replace the last with Ananya; first becomes partial payer
+   296→  const partialPayerId = studentsInOrder[ruleIdx[0]].id;
+   297→  ruleIdx.pop();
+   298→  for (const i of ruleIdx) defaulters.add(studentsInOrder[i].id);
+   299→  defaulters.add(IDS.ananya);
+   300→
+   301→  for (const s of studentsInOrder) {
+   302→    const isDefaulter = defaulters.has(s.id);
+   303→    const isPartial = s.id === partialPayerId;
+   304→    // Term 1 — everyone paid
+   305→    const c1 = chargeFor(s.id, 'inst-t1');
+   306→    const d1 = `2026-04-${pad(Math.floor(r() * 8) + 3)}`;
+   307→    const m1: PaymentMode = r() < 0.42 ? 'UPI' : r() < 0.72 ? 'Cash' : r() < 0.9 ? 'Bank transfer' : 'Cheque';
+   308→    const payId1 = `pay-${pad(paySeq++, 5)}`;
+   309→    payments.push({ id: payId1, studentId: s.id, date: d1, amount: 28300, mode: m1, reference: refFor(m1, r), collectedBy: 'Amit Joshi', allocations: [{ chargeId: c1.id, amount: 28300 }], status: 'posted' });
+   310→    const rc1: Receipt = { id: `rcp-${s.id}-t1`, no: s.id === IDS.ananya ? 'RCPT/2026/00482' : nextReceiptNo(), paymentId: payId1, studentId: s.id, date: d1, amount: 28300, mode: m1, collectedBy: 'Amit Joshi' };
+   311→    if (s.id === IDS.ananya) ananyaReceiptId = rc1.id;
+   312→    receipts.push(rc1);
+   313→
+   314→    if (!isDefaulter) {
+   315→      const c2 = chargeFor(s.id, 'inst-t2');
+   316→      const d2 = `2026-0${r() < 0.5 ? 6 : 7}-${pad(Math.floor(r() * (r() < 0.5 ? 30 : 9)) + 1)}`;
+   317→      const m2: PaymentMode = r() < 0.42 ? 'UPI' : r() < 0.72 ? 'Cash' : r() < 0.9 ? 'Bank transfer' : 'Cheque';
+   318→      const payId2 = `pay-${pad(paySeq++, 5)}`;
+   319→      payments.push({ id: payId2, studentId: s.id, date: d2, amount: 28300, mode: m2, reference: refFor(m2, r), collectedBy: 'Amit Joshi', allocations: [{ chargeId: c2.id, amount: 28300 }], status: 'posted' });
+   320→      receipts.push({ id: `rcp-${s.id}-t2`, no: nextReceiptNo(), paymentId: payId2, studentId: s.id, date: d2, amount: 28300, mode: m2, collectedBy: 'Amit Joshi' });
+   321→    } else if (isPartial) {
+   322→      const c2 = chargeFor(s.id, 'inst-t2');
+   323→      payments.push({ id: `pay-${pad(paySeq++, 5)}`, studentId: s.id, date: '2026-07-05', amount: 25500, mode: 'Cash', collectedBy: 'Amit Joshi', allocations: [{ chargeId: c2.id, amount: 25500 }], status: 'posted' });
+   324→      receipts.push({ id: `rcp-${s.id}-t2p`, no: nextReceiptNo(), paymentId: `pay-${pad(paySeq - 1, 5)}`, studentId: s.id, date: '2026-07-05', amount: 25500, mode: 'Cash', collectedBy: 'Amit Joshi' });
+   325→    }
+   326→    // New admits paid admission fee at admission (except stu idx 300 who pays today)
+   327→    if (NEW_ADMITS.includes(students.indexOf(s)) && s.id !== 'stu-0300') {
+   328→      const ca = charges.find((c) => c.studentId === s.id && c.head === 'Admission fee');
+   329→      if (ca) {
+   330→        payments.push({ id: `pay-${pad(paySeq++, 5)}`, studentId: s.id, date: s.admissionDate, amount: 5000, mode: 'Cash', collectedBy: 'Priya Nair', allocations: [{ chargeId: ca.id, amount: 5000 }], status: 'posted' });
+   331→        receipts.push({ id: `rcp-${s.id}-adm`, no: nextReceiptNo(), paymentId: `pay-${pad(paySeq - 1, 5)}`, studentId: s.id, date: s.admissionDate, amount: 5000, mode: 'Cash', collectedBy: 'Priya Nair' });
+   332→      }
+   333→    }
+   334→  }
+   335→
+   336→  /* Today's five payments — ₹1,24,500 total, ₹42,000 cash */
+   337→  for (const tp of TODAY_PAYERS) {
+   338→    const s = studentsInOrder[tp.idx];
+   339→    const open = charges
+   340→      .filter((c) => c.studentId === s.id && c.status === 'posted')
+   341→      .filter((c) => {
+   342→        const paid = payments.filter((p) => p.studentId === s.id && p.status === 'posted')
+   343→          .flatMap((p) => p.allocations).filter((a) => a.chargeId === c.id)
+   344→          .reduce((t, a) => t + a.amount, 0);
+   345→        return paid < c.amount;
+   346→      })
+   347→      .map((c) => ({ id: c.id, amount: c.amount - payments.filter((p) => p.studentId === s.id).flatMap((p) => p.allocations).filter((a) => a.chargeId === c.id).reduce((t, a) => t + a.amount, 0), dueDate: c.dueDate }));
+   348→    const allocations = allocateCharges(open, tp.amount);
+   349→    const payId = `pay-${pad(paySeq++, 5)}`;
+   350→    payments.push({ id: payId, studentId: s.id, date: SCHOOL_DATE_DEFAULT, amount: tp.amount, mode: tp.mode, reference: refFor(tp.mode, r), collectedBy: 'Amit Joshi', allocations, status: 'posted' });
+   351→    receipts.push({ id: `rcp-today-${s.id}`, no: nextReceiptNo(), paymentId: payId, studentId: s.id, date: SCHOOL_DATE_DEFAULT, amount: tp.amount, mode: tp.mode, collectedBy: 'Amit Joshi' });
+   352→  }
+   353→
+   354→  /* ── Fee plans ── */
+   355→  const feePlans: FeePlan[] = [
+   356→    {
+   357→      id: IDS.plan2627, name: 'Annual Fee Plan 2026-27', ayId: IDS.ay2627, appliesTo: 'all',
+   358→      heads: [
+   359→        { head: 'Tuition fee', amount: 64900 },
+   360→        { head: 'Development fee', amount: 12000 },
+   361→        { head: 'Activity fee', amount: 8000 },
+   362→      ],
+   363→      installments: [
+   364→        { id: 'inst-t1', name: 'Term 1', amount: 28300, dueDate: '2026-04-10', sequence: 1 },
+   365→        { id: 'inst-t2', name: 'Term 2', amount: 28300, dueDate: '2026-07-10', sequence: 2 },
+   366→        { id: 'inst-t3', name: 'Term 3', amount: 28300, dueDate: '2026-10-10', sequence: 3 },
+   367→      ],
+   368→      partialAllowed: true, status: 'active',
+   369→    },
+   370→    {
+   371→      id: 'plan-2025', name: 'Annual Fee Plan 2025-26', ayId: IDS.ay2526, appliesTo: 'all',
+   372→      heads: [
+   373→        { head: 'Tuition fee', amount: 58900 },
+   374→        { head: 'Development fee', amount: 11000 },
+   375→        { head: 'Activity fee', amount: 7000 },
+   376→      ],
+   377→      installments: [
+   378→        { id: 'inst25-1', name: 'Term 1', amount: 25633, dueDate: '2025-04-10', sequence: 1 },
+   379→        { id: 'inst25-2', name: 'Term 2', amount: 25633, dueDate: '2025-07-10', sequence: 2 },
+   380→        { id: 'inst25-3', name: 'Term 3', amount: 25634, dueDate: '2025-10-10', sequence: 3 },
+   381→      ],
+   382→      partialAllowed: true, status: 'archived',
+   383→    },
+   384→  ];
+   385→
+   386→  /* ── Attendance ── */
+   387→  const registers: AttendanceRegister[] = [];
+   388→  const dates: string[] = [];
+   389→  for (const d of ['2026-06-22','2026-06-23','2026-06-24','2026-06-25','2026-06-26','2026-06-29','2026-06-30',
+   390→    '2026-07-01','2026-07-02','2026-07-03','2026-07-06','2026-07-07','2026-07-08','2026-07-09','2026-07-10',
+   391→    '2026-07-13','2026-07-14','2026-07-15','2026-07-16','2026-07-17','2026-07-20','2026-07-21']) dates.push(d);
+   392→  const UNMARKED_TODAY = new Set([IDS.section7A, 's-8c', 's-9b', 's-10a']);
+   393→  const LEAVE_REASONS = ['Fever', 'Family function', 'Medical check-up', 'Out of town'];
+   394→
+   395→  for (const date of dates) {
+   396→    for (const sec of sections) {
+   397→      const roster = enrollments
+   398→        .filter((e) => e.sectionId === sec.id && e.ayId === IDS.ay2627 && e.status === 'active')
+   399→        .map((e) => ({ e, s: students.find((s) => s.id === e.studentId)! }))
+   400→        .filter((x) => x.s && x.s.status === 'active')
+   401→        .sort((a, b) => a.e.rollNo - b.e.rollNo);
+   402→      if (roster.length === 0) continue;
+   403→
+   404→      const isToday = date === SCHOOL_DATE_DEFAULT;
+   405→      const unmarked = isToday && UNMARKED_TODAY.has(sec.id);
+   406→      const marks: Record<string, MarkCode> = {};
+   407→      const reasons: Record<string, string> = {};
+   408→      if (!unmarked) {
+   409→        const rng = mulberry32(
+   410→          date.split('-').join('') .slice(4) !== ''
+   411→            ? Number(date.split('-').join('')) + sec.id.split('').reduce((t, c) => t + c.charCodeAt(0), 0)
+   412→            : 1,
+   413→        );
+   414→        for (const { e } of roster) {
+   415→          const v = rng();
+   416→          if (v < 0.05) {
+   417→            marks[e.studentId] = 'A';
+   418→            if (rng() < 0.4) reasons[e.studentId] = 'Not reported';
+   419→          } else if (v < 0.062) {
+   420→            marks[e.studentId] = 'L';
+   421→            reasons[e.studentId] = LEAVE_REASONS[Math.floor(rng() * LEAVE_REASONS.length)];
+   422→          } else {
+   423→            marks[e.studentId] = 'P';
+   424→          }
+   425→        }
+   426→      }
+   427→      const ct = staff.find((st) => st.id === sec.classTeacherId);
+   428→      registers.push({
+   429→        id: `reg-${date}-${sec.id}`, date, sectionId: sec.id,
+   430→        marks, reasons,
+   431→        status: unmarked ? 'unmarked' : 'submitted',
+   432→        submittedAt: unmarked ? undefined : `${date}T0${8 + Math.floor(r() * 2)}:${pad(Math.floor(r() * 50) + 5, 2)}`,
+   433→        submittedBy: unmarked ? undefined : ct?.name,
+   434→        revision: 1,
+   435→      });
+   436→    }
+   437→  }
+   438→
+   439→  /* ── Correction requests ── */
+   440→  const teacherNameFor = (sectionId: string): string => {
+   441→    const sec = sections.find((x) => x.id === sectionId);
+   442→    return staff.find((st) => st.id === sec?.classTeacherId)?.name ?? 'Class teacher';
+   443→  };
+   444→  const corrections: CorrectionRequest[] = [
+   445→    { id: 'crq-001', no: 'CORR-0031', date: '2026-07-17', sectionId: 's-6a', studentId: 'stu-0185', from: 'A', to: 'P', reason: 'Reached at 9:05, marked absent by mistake — bus log confirms entry.', requestedBy: teacherNameFor('s-6a'), requestedAt: '2026-07-17T14:20', status: 'pending' },
+   446→    { id: 'crq-002', no: 'CORR-0032', date: '2026-07-16', sectionId: 's-8b', studentId: 'stu-0262', from: 'P', to: 'L', reason: 'Student left for dental appointment at 11 am; leave applied retroactively.', requestedBy: teacherNameFor('s-8b'), requestedAt: '2026-07-16T15:05', status: 'pending' },
+   447→    { id: 'crq-003', no: 'CORR-0029', date: '2026-07-10', sectionId: 's-5c', studentId: 'stu-0155', from: 'A', to: 'P', reason: 'Marked absent due to sync error; corrected register attached.', requestedBy: 'R. Bhosale', requestedAt: '2026-07-10T13:40', status: 'approved', reviewer: 'Sunita Deshpande', resolvedAt: '2026-07-10T17:02', resolutionNote: 'Verified with transport log.' },
+   448→    { id: 'crq-004', no: 'CORR-0027', date: '2026-07-08', sectionId: 's-9c', studentId: 'stu-0301', from: 'P', to: 'A', reason: 'Requested without evidence.', requestedBy: 'M. Jadhav', requestedAt: '2026-07-08T12:10', status: 'rejected', reviewer: 'Meera Kulkarni', resolvedAt: '2026-07-08T16:45', resolutionNote: 'No supporting evidence provided.' },
+   449→  ];
+   450→
+   451→  /* ── Fee requests ── */
+   452→  const partialPayment = payments.find((p) => p.studentId === partialPayerId && p.amount === 25500)!;
+   453→  const feeRequests: FeeRequest[] = [
+   454→    { id: 'frq-001', type: 'reversal', paymentId: partialPayment.id, studentId: partialPayment.studentId, originalRef: receipts.find((rc) => rc.paymentId === partialPayment.id)?.no ?? '—', amount: 25500, reason: 'Parent paid cash twice for the same installment; second receipt to be reversed.', requestedBy: 'Amit Joshi', requestedAt: '2026-07-20T17:30', status: 'pending' },
+   455→    { id: 'frq-002', type: 'adjustment', chargeId: `chg-${'stu-0200'}-inst-t3`, studentId: 'stu-0200', originalRef: 'Annual fee — Term 3', amount: 3300, reason: 'Sibling concession of ₹3,300 approved by Principal for Term 3.', requestedBy: 'Amit Joshi', requestedAt: '2026-07-19T11:15', status: 'pending' },
+   456→    { id: 'frq-003', type: 'adjustment', chargeId: `chg-${'stu-0120'}-adm`, studentId: 'stu-0120', originalRef: 'Admission fee', amount: 5000, reason: 'Staff ward — admission fee waived.', requestedBy: 'Amit Joshi', requestedAt: '2026-07-08T10:00', status: 'approved', reviewer: 'Sunita Deshpande', resolvedAt: '2026-07-08T12:30' },
+   457→  ];
+   458→
+   459→  /* ── Day close ── */
+   460→  const dayCloses: DayClose[] = [
+   461→    { id: 'dc-2026-07-20', date: '2026-07-20', cashExpected: 15000, cashCounted: 15000, upiVerified: 8000, bankVerified: 0, variance: 0, reviewer: 'Meera Kulkarni', status: 'closed' },
+   462→  ];
+   463→  // Two payments on 20 Jul to back the closed day
+   464→  const c20a = chargeFor(studentsInOrder[80].id, 'inst-t3');
+   465→  payments.push({ id: 'pay-0720a', studentId: studentsInOrder[80].id, date: '2026-07-20', amount: 15000, mode: 'Cash', collectedBy: 'Amit Joshi', allocations: [{ chargeId: c20a.id, amount: 15000 }], status: 'posted' });
+   466→  receipts.push({ id: 'rcp-0720a', no: nextReceiptNo(), paymentId: 'pay-0720a', studentId: studentsInOrder[80].id, date: '2026-07-20', amount: 15000, mode: 'Cash', collectedBy: 'Amit Joshi' });
+   467→  payments.push({ id: 'pay-0720b', studentId: studentsInOrder[210].id, date: '2026-07-20', amount: 8000, mode: 'UPI', reference: refFor('UPI', r), collectedBy: 'Amit Joshi', allocations: [{ chargeId: chargeFor(studentsInOrder[210].id, 'inst-t3').id, amount: 8000 }], status: 'posted' });
+   468→  receipts.push({ id: 'rcp-0720b', no: nextReceiptNo(), paymentId: 'pay-0720b', studentId: studentsInOrder[210].id, date: '2026-07-20', amount: 8000, mode: 'UPI', collectedBy: 'Amit Joshi' });
+   469→
+   470→  /* ── Imports ── */
+   471→  const mkRow = (n: number, vals: Record<string, string>, result: ImportRow['result'], extra: Partial<ImportRow> = {}): ImportRow => ({ n, values: vals, result, ...extra });
+   472→  const imports: ImportBatch[] = [
+   473→    {
+   474→      id: 'imp-002', type: 'Students', ayId: IDS.ay2627, fileName: 'grade4_new_joinees_2026.csv',
+   475→      headerRow: true, duplicateStrategy: 'skip', uploadedAt: '2026-07-21T09:02', uploadedBy: 'Sunita Deshpande',
+   476→      status: 'ready', rows: Array.from({ length: 31 }, (_, i) => {
+   477→        const first = pick(r() < 0.5 ? FEMALE : MALE);
+   478→        const last = pick(SUR);
+   479→        const adm = `ADM-2026-${pad(700 + i)}`;
+   480→        const base = { 'Admission number': adm, 'First name': first, 'Last name': last, Grade: '4', Section: i % 3 === 0 ? 'A' : i % 3 === 1 ? 'B' : 'C', 'Date of birth': `2016-${pad((i % 12) + 1, 2)}-${pad((i % 27) + 1, 2)}`, 'Guardian name': `${pick(MALE)} ${last}`, 'Guardian mobile': `9${pad(Math.floor(r() * 899999999) + 100000000, 9)}` };
+   481→        if (i === 4) return mkRow(i + 1, base, 'conflict', { match: 'ADM-2026-0104 — Isha Deshmukh (Grade 4-B)' });
+   482→        if (i === 17) return mkRow(i + 1, base, 'conflict', { match: 'ADM-2026-0111 — Aarav Kulkarni (Grade 4-C)' });
+   483→        if (i === 25) return mkRow(i + 1, { ...base, 'Guardian mobile': '98220' }, 'rejected', { error: 'Guardian mobile must be 10 digits.' });
+   484→        return mkRow(i + 1, base, 'accepted');
+   485→      }),
+   486→    },
+   487→    {
+   488→      id: 'imp-001', type: 'Students', ayId: IDS.ay2627, fileName: 'bulk_upload_jun2026_v2.csv',
+   489→      headerRow: true, duplicateStrategy: 'skip', uploadedAt: '2026-07-19T10:12', uploadedBy: 'Priya Nair',
+   490→      status: 'failed', rows: [
+   491→        mkRow(1, { 'Admission number': '', 'First name': 'Om', 'Last name': 'Salunkhe', Grade: '6', Section: 'A', 'Date of birth': '2014-02-11', 'Guardian name': 'Ravi Salunkhe', 'Guardian mobile': '9822011223' }, 'rejected', { error: 'Admission number is required.' }),
+   492→        mkRow(2, { 'Admission number': 'ADM-2026-0750', 'First name': 'Sara', 'Last name': 'Khan', Grade: '6', Section: 'B', 'Date of birth': '31/11/2015', 'Guardian name': 'Imran Khan', 'Guardian mobile': '9822011334' }, 'rejected', { error: 'Date of birth is not a valid date.' }),
+   493→        mkRow(3, { 'Admission number': 'ADM-2026-0751', 'First name': 'Ved', 'Last name': 'Kadam', Grade: '11', Section: 'A', 'Date of birth': '2013-06-21', 'Guardian name': 'Girish Kadam', 'Guardian mobile': '9822011445' }, 'rejected', { error: 'Grade 11 does not exist.' }),
+   494→        mkRow(4, { 'Admission number': 'ADM-2026-0752', 'First name': 'Myra', 'Last name': 'Wagh', Grade: '6', Section: 'D', 'Date of birth': '2014-09-02', 'Guardian name': 'Sameer Wagh', 'Guardian mobile': '9822011556' }, 'rejected', { error: 'Section D does not exist in Grade 6.' }),
+   495→        mkRow(5, { 'Admission number': 'ADM-2026-0753', 'First name': 'Ishaan', 'Last name': 'Rane', Grade: '6', Section: 'C', 'Date of birth': '2014-12-19', 'Guardian name': 'Ajay Rane', 'Guardian mobile': '9822011667' }, 'rejected', { error: 'Header mismatch — file uses 2025 column names.' }),
+   496→      ],
+   497→    },
+   498→  ];
+   499→
+   500→  /* ── Notices ── */
+   501→  const notices: Notice[] = [
+   502→    { id: 'not-001', title: 'Term 2 fee payment reminder', message: 'Dear parents, Term 2 fees were due on 10 July 2026. Kindly clear pending dues at the school office between 9:00 am and 2:00 pm on working days. A receipt is issued for every payment. — Accounts office', audience: 'All parents', publishDate: '2026-07-15', expiryDate: '2026-07-31', status: 'published', author: 'Sunita Deshpande', createdAt: '2026-07-15T09:00', publishedAt: '2026-07-15T09:05' },
+   503→    { id: 'not-002', title: 'Annual Day rehearsal schedule', message: 'Annual Day rehearsals begin 27 July for participating grades. Students should report to the assembly hall at 1:30 pm with their class teachers. Costume details will be shared by section teachers.', audience: 'Everyone', publishDate: '2026-07-18', expiryDate: '2026-08-15', status: 'published', author: 'Vikram Rao', createdAt: '2026-07-18T11:20', publishedAt: '2026-07-18T11:30' },
+   504→    { id: 'not-003', title: 'Grade 7 parent interaction — summary', message: 'Thank you to all Grade 7 parents who attended the interaction on 11 July. Key points: attendance expectations, Term 2 dues and the new parent app. Slides attached in the school diary.', audience: 'Grade', gradeId: 'g7', publishDate: '2026-07-12', expiryDate: '2026-07-26', status: 'published', author: 'Farah Khan', createdAt: '2026-07-12T16:40', publishedAt: '2026-07-12T16:45' },
+   505→    { id: 'not-004', title: 'Staff meeting minutes — attendance process', message: 'Minutes of the 18 July staff meeting: registers must be submitted by 9:15 am daily. Correction requests after submission go to the office approval queue. Reminder: do not edit registers after submission.', audience: 'All staff', publishDate: '2026-07-19', expiryDate: '2026-08-19', status: 'published', author: 'Meera Kulkarni', createdAt: '2026-07-19T10:10', publishedAt: '2026-07-19T10:15' },
+   506→    { id: 'not-005', title: 'Independence Day celebration', message: 'Independence Day will be celebrated on the school grounds at 8:00 am. Students from Grades 5-10 attend in uniform. Parents are welcome; seating from 7:40 am.', audience: 'Everyone', publishDate: '2026-08-01', expiryDate: '2026-08-16', status: 'scheduled', author: 'Vikram Rao', createdAt: '2026-07-20T12:00' },
+   507→    { id: 'not-006', title: 'Summer reading list', message: 'The library summer reading list is available at the front office. Books can be borrowed for the break.', audience: 'All parents', publishDate: '2026-06-20', expiryDate: '2026-07-05', status: 'expired', author: 'Priya Nair', createdAt: '2026-06-20T09:00', publishedAt: '2026-06-20T09:10' },
+   508→    { id: 'not-007', title: 'Grade 10 guidance sessions (coming later)', message: 'Draft notice — exam guidance sessions will be scheduled once the exams module is enabled.', audience: 'Grade', gradeId: 'g10', publishDate: '2026-08-05', expiryDate: '2026-08-20', status: 'draft', author: 'Meera Kulkarni', createdAt: '2026-07-20T15:30' },
+   509→  ];
+   510→
+   511→  /* ── Holidays ── */
+   512→  const holidays: Holiday[] = [
+   513→    { id: 'hol-1', date: '2026-08-15', type: 'Holiday', name: 'Independence Day', appliesTo: 'All' },
+   514→    { id: 'hol-2', date: '2026-09-14', type: 'Holiday', name: 'Ganesh Chaturthi', appliesTo: 'All' },
+   515→    { id: 'hol-3', date: '2026-10-02', type: 'Holiday', name: 'Gandhi Jayanti', appliesTo: 'All' },
+   516→    { id: 'hol-4', date: '2026-11-09', type: 'Holiday', name: 'Diwali break', appliesTo: 'All' },
+   517→    { id: 'hol-5', date: '2026-11-10', type: 'Holiday', name: 'Diwali break', appliesTo: 'All' },
+   518→    { id: 'hol-6', date: '2026-11-11', type: 'Holiday', name: 'Diwali break', appliesTo: 'All' },
+   519→    { id: 'hol-7', date: '2026-12-25', type: 'Holiday', name: 'Christmas', appliesTo: 'All' },
+   520→    { id: 'hol-8', date: '2026-07-25', type: 'Teaching day', name: 'Compensating day for Diwali break', appliesTo: 'All' },
+   521→  ];
+   522→
+   523→  /* ── Exports, office tasks ── */
+   524→  const exports: ExportJob[] = [
+   525→    { id: 'exp-001', type: 'Fee dues report', requestedBy: 'Amit Joshi', requestedAt: '2026-07-20T16:40', status: 'ready', expiresAt: '2026-08-03', columns: ['Admission number', 'Student', 'Grade', 'Due date', 'Amount due'], rows: [
+   526→      ['ADM-2026-0142', 'Ananya Patil', 'Grade 7-A', '10 Jul 2026', '28300'],
+   527→      ['ADM-2026-0018', 'Vivaan Shinde', 'Grade 1-A', '10 Jul 2026', '28300'],
+   528→      ['ADM-2026-0043', 'Sai Chavan', 'Grade 2-B', '10 Jul 2026', '2800'],
+   529→    ] },
+   530→    { id: 'exp-000', type: 'Attendance summary', requestedBy: 'Meera Kulkarni', requestedAt: '2026-06-30T15:10', status: 'expired', expiresAt: '2026-07-14' },
+   531→  ];
+   532→
+   533→  const officeTasks = [
+   534→    { id: 'ot-001', from: 'Rajesh Patil', studentId: IDS.ananya, note: 'Guardian mobile ending 4321 has changed — please update office records.', at: '2026-07-20T18:22', status: 'open' as const },
+   535→  ];
+   536→
+   537→  /* ── Audit ── */
+   538→  const audit = [
+   539→    { id: 'aud-001', at: '2026-07-21T07:31', actor: 'Sunita Deshpande', role: 'school_admin' as const, action: 'Signed in', resource: 'Session', resourceId: '—', result: 'success' as const },
+   540→    { id: 'aud-002', at: '2026-07-21T08:05', actor: 'Amit Joshi', role: 'accountant' as const, action: 'Recorded payment', resource: 'Payment', resourceId: 'pay-00611', result: 'success' as const },
+   541→    { id: 'aud-003', at: '2026-07-21T09:02', actor: 'Sunita Deshpande', role: 'school_admin' as const, action: 'Uploaded import', resource: 'Import', resourceId: 'imp-002', result: 'success' as const },
+   542→    { id: 'aud-004', at: '2026-07-20T17:30', actor: 'Amit Joshi', role: 'accountant' as const, action: 'Requested reversal', resource: 'Fee request', resourceId: 'frq-001', result: 'success' as const },
+   543→    { id: 'aud-005', at: '2026-07-20T16:45', actor: 'Meera Kulkarni', role: 'principal' as const, action: 'Closed business day', resource: 'Day close', resourceId: 'dc-2026-07-20', result: 'success' as const },
+   544→    { id: 'aud-006', at: '2026-07-20T16:40', actor: 'Amit Joshi', role: 'accountant' as const, action: 'Created export', resource: 'Export', resourceId: 'exp-001', result: 'success' as const },
+   545→    { id: 'aud-007', at: '2026-07-19T11:15', actor: 'Amit Joshi', role: 'accountant' as const, action: 'Requested adjustment', resource: 'Fee request', resourceId: 'frq-002', result: 'success' as const },
+   546→    { id: 'aud-008', at: '2026-07-19T10:12', actor: 'Priya Nair', role: 'receptionist' as const, action: 'Uploaded import', resource: 'Import', resourceId: 'imp-001', result: 'failed' as const },
+   547→    { id: 'aud-009', at: '2026-07-19T09:15', actor: 'Farah Khan', role: 'teacher' as const, action: 'Submitted register', resource: 'Register', resourceId: 'reg-2026-07-19-s-7a', result: 'success' as const },
+   548→    { id: 'aud-010', at: '2026-07-18T11:30', actor: 'Vikram Rao', role: 'school_admin' as const, action: 'Published notice', resource: 'Notice', resourceId: 'not-002', result: 'success' as const },
+   549→    { id: 'aud-011', at: '2026-07-17T14:30', actor: 'Sunita Deshpande', role: 'school_admin' as const, action: 'Viewed student ledger', resource: 'Student', resourceId: IDS.ananya, result: 'success' as const },
+   550→    { id: 'aud-012', at: '2026-07-16T10:05', actor: 'Priya Nair', role: 'receptionist' as const, action: 'Attempted fee edit', resource: 'Fee plan', resourceId: IDS.plan2627, result: 'denied' as const },
+   551→  ];
+   552→
+   553→  void ananyaReceiptId;
+   554→  return {
+   555→    academicYears: [
+   556→      { id: IDS.ay2526, name: '2025-26', start: '2025-04-01', end: '2026-03-31', status: 'closed' },
+   557→      { id: IDS.ay2627, name: '2026-27', start: '2026-04-01', end: '2027-03-31', status: 'active' },
+   558→      { id: 'ay-2027-28', name: '2027-28', start: '2027-04-01', end: '2028-03-31', status: 'upcoming' },
+   559→    ],
+   560→    campuses: [{ id: IDS.campusMain, name: 'Main Campus' }],
+   561→    grades, sections, students, guardians, enrollments, staff, assignments, registers, corrections,
+   562→    feePlans, charges, payments, receipts, feeRequests, dayCloses, imports, notices,
+   563→    audit, exports, officeTasks, holidays,
+   564→  };
+   565→}
+   566→
